@@ -32,6 +32,8 @@ public final class SSLClientStream: SSLClientStreamType {
 	private let readIO: SSLIO
 	private let writeIO: SSLIO
 
+    private var waitingData = [Int8]()
+
 	public enum Error: ErrorType {
 		case UnsupportedContext
 	}
@@ -60,40 +62,55 @@ public final class SSLClientStream: SSLClientStreamType {
 	public func receive(completion: (Void throws -> [Int8]) -> Void) {
 		self.rawStream.receive { result in
 			do {
-				let data = try result()
-				guard data.count > 0 else { return }
-				self.readIO.write(data)
-				print("data: \(data)")
-				print("ssl.state: \(self.ssl.state)")
-				//if self.ssl.state != .OK {
-					self.ssl.doHandshake()
-					self.checkSslOutput() { result in
-						do {
-							try result()
+				let encryptedData = try result()
+				guard encryptedData.count > 0 else { return }
+				self.readIO.write(encryptedData)
 
-							let data = self.ssl.read()
-							print("decrypted data: \(data)")
-							if data.count > 0 {
-								completion({ data })
-							}
-						} catch {
-							completion({ throw error })
-						}
-					}
-				/*} else {
+                if self.ssl.state != .OK {
+                    self.ssl.doHandshake()
+                    self.sendEncryptedDataIfNecessary { result in
+                        do {
+                            try result()
+                        } catch {
+                            completion({ throw error })
+                        }
+                        guard self.ssl.state == .OK && self.waitingData.count > 0 else { return }
 
-				}*/
-			} catch {
-				completion({ throw error })
-			}
-		}
-	}
+                        self.ssl.write(self.waitingData)
+                        self.waitingData = []
+                        let encryptedData = self.writeIO.read()
+                        guard encryptedData.count > 0 else { return }
+                        self.rawStream.send(encryptedData) { serializeResult in
+                            try! serializeResult()
+                        }
+                    }
+                }
+                else {
+                    var unencryptedData = self.ssl.read() 
+                    while unencryptedData.count > 0 {
+                        completion({ unencryptedData })
+                        unencryptedData = self.ssl.read() 
+                    }
+                }
+            } catch {
+                completion({ throw error })
+            }
+        }
+    }
 
-	public func send(data: [Int8], completion: (Void throws -> Void) -> Void) {
-		self.checkSslOutput(completion)
-		//self.ssl.write(data)
-		//
-	}
+    public func send(data: [Int8], completion: (Void throws -> Void) -> Void) {
+        if self.ssl.state != .OK {
+            self.waitingData = data
+            self.ssl.doHandshake()
+        } else {
+            self.ssl.write(data)
+        }
+
+        sendEncryptedDataIfNecessary { result in
+            do { try result() }
+            catch { completion({ throw error }) }
+        }
+    }
 
 	public func close() {
 		self.rawStream.close()
@@ -103,17 +120,16 @@ public final class SSLClientStream: SSLClientStreamType {
 		return try! SSLClientStream(context: self.context, rawStream: self.rawStream.pipe())
 	}
 
-	private func checkSslOutput(completion: (Void throws -> Void) -> Void) {
-		let data = self.writeIO.read()
-		guard data.count > 0 else { completion({}); return }
-		print("encrypted data: \(data)")
-		self.rawStream.send(data) { serializeResult in
-			do {
-				try serializeResult()
-				completion({})
-			} catch {
-				completion({ throw error })
-			}
-		}
-	}
+    private func sendEncryptedDataIfNecessary(completion: (Void throws -> Void) -> Void) {
+        let encryptedData = self.writeIO.read()
+        guard encryptedData.count > 0 else { completion({}); return }
+        self.rawStream.send(encryptedData) { serializeResult in
+            do {
+                try serializeResult()
+                completion({})
+            } catch {
+                completion({ throw error })
+            }
+        }
+    }
 }
