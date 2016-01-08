@@ -42,7 +42,12 @@ public final class SSLClientContext: SSLContext, SSLClientContextType {
 			}
 			SSL_CTX_set_verify_depth(ctx, 4)
 			SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION)
-			guard SSL_CTX_load_verify_locations(ctx, "/root/Octopus/ca-bundle.crt", nil) == 1 else { print("SSL_CTX_load_verify_locations error"); return }
+            #if os(OSX)
+            let certificateLocations = "/usr/local/etc/openssl/cert.pem"
+            #else
+            let certificateLocations = "/root/Octopus/ca-bundle.crt"
+            #endif
+			guard SSL_CTX_load_verify_locations(ctx, certificateLocations, nil) == 1 else { print("SSL_CTX_load_verify_locations error"); return }
 		}
 	}
 
